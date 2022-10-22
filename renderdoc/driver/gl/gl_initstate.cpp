@@ -570,6 +570,9 @@ bool GLResourceManager::Prepare_InitialState(GLResource res)
   // detect it and insert state-change chunks, we assume all commands will come from a single
   // thread.
   RDCASSERT(res.ContextShareGroup);
+  if(!res.ContextShareGroup) {
+    return false;
+  }
 
   ContextPair &ctx = m_Driver->GetCtx();
   if(res.ContextShareGroup == ctx.ctx || res.ContextShareGroup == ctx.shareGroup)
