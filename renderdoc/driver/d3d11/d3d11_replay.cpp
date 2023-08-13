@@ -1046,6 +1046,11 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
 
           if(desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER)
           {
+            view.numSlices = 1;
+            view.firstSlice = 0;
+            view.firstMip = 0;
+            view.numMips = 1;
+
             view.firstElement = desc.Buffer.FirstElement;
             view.numElements = desc.Buffer.NumElements;
             view.bufferFlags = D3DBufferViewFlags(desc.Buffer.Flags);
@@ -1060,6 +1065,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
           }
           else if(desc.ViewDimension == D3D11_UAV_DIMENSION_TEXTURE1D)
           {
+            view.numSlices = 1;
+            view.firstSlice = 0;
             view.firstMip = desc.Texture1D.MipSlice;
             view.numMips = 1;
           }
@@ -1072,6 +1079,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
           }
           else if(desc.ViewDimension == D3D11_UAV_DIMENSION_TEXTURE2D)
           {
+            view.numSlices = 1;
+            view.firstSlice = 0;
             view.firstMip = desc.Texture2D.MipSlice;
             view.numMips = 1;
           }
@@ -1267,6 +1276,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
         }
         else if(desc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE1D)
         {
+          view.numSlices = 1;
+          view.firstSlice = 0;
           view.firstMip = desc.Texture1D.MipSlice;
           view.numMips = 1;
         }
@@ -1279,6 +1290,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
         }
         else if(desc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2D)
         {
+          view.numSlices = 1;
+          view.firstSlice = 0;
           view.firstMip = desc.Texture2D.MipSlice;
           view.numMips = 1;
         }
@@ -1289,10 +1302,19 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
           view.firstMip = desc.Texture2DArray.MipSlice;
           view.numMips = 1;
         }
+        else if(desc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2DMS)
+        {
+          view.firstMip = 0;
+          view.numMips = 1;
+          view.firstSlice = 0;
+          view.numSlices = 1;
+        }
         else if(desc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY)
         {
           view.numSlices = desc.Texture2DMSArray.ArraySize;
           view.firstSlice = desc.Texture2DMSArray.FirstArraySlice;
+          view.firstMip = 0;
+          view.numMips = 1;
         }
         else if(desc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE3D)
         {
@@ -1361,6 +1383,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
         }
         else if(desc.ViewDimension == D3D11_UAV_DIMENSION_TEXTURE1D)
         {
+          view.numSlices = 1;
+          view.firstSlice = 0;
           view.firstMip = desc.Texture1D.MipSlice;
           view.numMips = 1;
         }
@@ -1373,6 +1397,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
         }
         else if(desc.ViewDimension == D3D11_UAV_DIMENSION_TEXTURE2D)
         {
+          view.numSlices = 1;
+          view.firstSlice = 0;
           view.firstMip = desc.Texture2D.MipSlice;
           view.numMips = 1;
         }
@@ -1434,6 +1460,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
 
         if(desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE1D)
         {
+          view.numSlices = 1;
+          view.firstSlice = 0;
           view.firstMip = desc.Texture1D.MipSlice;
           view.numMips = 1;
         }
@@ -1446,6 +1474,8 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
         }
         else if(desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D)
         {
+          view.numSlices = 1;
+          view.firstSlice = 0;
           view.firstMip = desc.Texture2D.MipSlice;
           view.numMips = 1;
         }
@@ -1456,10 +1486,19 @@ void D3D11Replay::SavePipelineState(uint32_t eventId)
           view.firstMip = desc.Texture2DArray.MipSlice;
           view.numMips = 1;
         }
+        else if(desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DMS)
+        {
+          view.firstMip = 0;
+          view.numMips = 1;
+          view.firstSlice = 0;
+          view.numSlices = 1;
+        }
         else if(desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY)
         {
           view.numSlices = desc.Texture2DMSArray.ArraySize;
           view.firstSlice = desc.Texture2DMSArray.FirstArraySlice;
+          view.firstMip = 0;
+          view.numMips = 1;
         }
 
         SAFE_RELEASE(res);
@@ -1633,6 +1672,14 @@ RDResult D3D11Replay::ReadLogInitialisation(RDCFile *rdc, bool storeStructuredBu
 void D3D11Replay::ReplayLog(uint32_t endEventID, ReplayLogType replayType)
 {
   m_pDevice->ReplayLog(0, endEventID, replayType);
+
+  // if this is a fresh replay from start, update the render state with the bindings at this event
+  if(replayType == eReplay_WithoutDraw || replayType == eReplay_Full)
+  {
+    D3D11RenderState *rs = m_pDevice->GetImmediateContext()->GetCurrentPipelineState();
+
+    m_RenderStateOM = rs->OM;
+  }
 }
 
 SDFile *D3D11Replay::GetStructuredFile()

@@ -44,6 +44,7 @@ static const int HighlightBorder = 2;
 
 static const int CheckWidth = 14;
 static const int CheckHeight = 14;
+static float CheckCornerSize = 2.0f;
 static const int CheckMargin = 3;
 
 static const int GroupHMargin = 8;
@@ -1290,6 +1291,93 @@ void RDStyle::drawComplexControl(ComplexControl control, const QStyleOptionCompl
   return RDTweakedNativeStyle::drawComplexControl(control, opt, p, widget);
 }
 
+static void drawX(const QStyleOption *opt, QPainter *p, const QRectF &rect)
+{
+  QPainterPath checkpath;
+  QPolygonF poly;
+
+  // Left side:
+  //
+  //             X
+  //             | CheckCornerSize
+  //             X
+  //              \\   innerSizeX, innerSizeY
+  //               \\  (width and height)
+  // CheckHeight    X
+  //               /
+  //              /
+  //             X
+  //             | CheckCornerSize
+  //             X
+
+  // Top side:
+  //
+  // X---X      X----X
+  //      \\   /
+  //       \\ /
+  //         X
+
+  Q_ASSERT(rect.height() == rect.width());
+
+  const float innerSize = float(rect.height() - Constants::CheckCornerSize * 2) / 2.0f;
+
+  const float totalSize = innerSize * 2 + Constants::CheckCornerSize * 2;
+  Q_ASSERT(totalSize == rect.height());
+
+  // left edge
+  QPointF pt = rect.topLeft();
+  poly << pt;
+  pt.setY(pt.y() + Constants::CheckCornerSize);
+  poly << pt;
+  pt.setY(pt.y() + innerSize);
+  pt.setX(pt.x() + innerSize);
+  poly << pt;
+  pt.setY(pt.y() + innerSize);
+  pt.setX(pt.x() - innerSize);
+  poly << pt;
+  pt.setY(pt.y() + Constants::CheckCornerSize);
+  poly << pt;
+
+  // bottom edge
+  pt.setX(pt.x() + Constants::CheckCornerSize);
+  poly << pt;
+  pt.setX(pt.x() + innerSize);
+  pt.setY(pt.y() - innerSize);
+  poly << pt;
+  pt.setX(pt.x() + innerSize);
+  pt.setY(pt.y() + innerSize);
+  poly << pt;
+  pt.setX(pt.x() + Constants::CheckCornerSize);
+  poly << pt;
+
+  // right edge
+  pt.setY(pt.y() - Constants::CheckCornerSize);
+  poly << pt;
+  pt.setX(pt.x() - innerSize);
+  pt.setY(pt.y() - innerSize);
+  poly << pt;
+  pt.setX(pt.x() + innerSize);
+  pt.setY(pt.y() - innerSize);
+  poly << pt;
+  pt.setY(pt.y() - Constants::CheckCornerSize);
+  poly << pt;
+
+  // top edge
+  pt.setX(pt.x() - Constants::CheckCornerSize);
+  poly << pt;
+  pt.setX(pt.x() - innerSize);
+  pt.setY(pt.y() + innerSize);
+  poly << pt;
+  pt.setX(pt.x() - innerSize);
+  pt.setY(pt.y() - innerSize);
+  poly << pt;
+  pt.setX(pt.x() - Constants::CheckCornerSize);
+  poly << pt;
+
+  checkpath.addPolygon(poly);
+  p->fillPath(checkpath, opt->palette.brush(QPalette::ButtonText));
+}
+
 void RDStyle::drawPrimitive(PrimitiveElement element, const QStyleOption *opt, QPainter *p,
                             const QWidget *widget) const
 {
@@ -1405,6 +1493,20 @@ void RDStyle::drawPrimitive(PrimitiveElement element, const QStyleOption *opt, Q
   else if(element == QStyle::PE_IndicatorViewItemCheck || element == QStyle::PE_IndicatorCheckBox)
   {
     QRect rect = opt->rect;
+    int w = rect.width();
+    int h = rect.height();
+    if(w < h)
+    {
+      int padding = (h - w) / 2;
+      rect.setHeight(w);
+      rect.adjust(0, padding, 0, padding);
+    }
+    else if(h < w)
+    {
+      int padding = (w - h) / 2;
+      rect.setWidth(h);
+      rect.adjust(padding, 0, padding, 0);
+    }
 
     QPen outlinePen(outlineBrush(opt->palette), 1.0);
 
@@ -1424,7 +1526,7 @@ void RDStyle::drawPrimitive(PrimitiveElement element, const QStyleOption *opt, Q
 
     if(opt->state & State_On)
     {
-      p->fillRect(rect, opt->palette.brush(QPalette::ButtonText));
+      drawX(opt, p, rect);
     }
     else if(opt->state & State_NoChange)
     {
@@ -1449,9 +1551,25 @@ void RDStyle::drawPrimitive(PrimitiveElement element, const QStyleOption *opt, Q
       group = QPalette::Inactive;
 
     if(viewitem->state & QStyle::State_Selected)
-      p->fillRect(viewitem->rect, viewitem->palette.brush(group, QPalette::Highlight));
-    else if(viewitem->backgroundBrush.style() != Qt::NoBrush)
-      p->fillRect(viewitem->rect, viewitem->backgroundBrush);
+    {
+      if(viewitem->backgroundBrush.style() != Qt::NoBrush)
+      {
+        p->fillRect(viewitem->rect, viewitem->backgroundBrush);
+        // If we have a custom color, use the selection color at half opacity over the custom color
+        QColor col = viewitem->palette.color(group, QPalette::Highlight);
+        col.setAlphaF(0.5f);
+        p->fillRect(viewitem->rect, QBrush(col));
+      }
+      else
+      {
+        p->fillRect(viewitem->rect, viewitem->palette.brush(group, QPalette::Highlight));
+      }
+    }
+    else
+    {
+      if(viewitem->backgroundBrush.style() != Qt::NoBrush)
+        p->fillRect(viewitem->rect, viewitem->backgroundBrush);
+    }
 
     return;
   }
@@ -1542,6 +1660,20 @@ void RDStyle::drawControl(ControlElement control, const QStyleOption *opt, QPain
     if(checkbox)
     {
       QRectF rect = proxy()->subElementRect(SE_CheckBoxIndicator, opt, widget).adjusted(1, 1, -1, -1);
+      float w = rect.width();
+      float h = rect.height();
+      if(w < h)
+      {
+        int padding = (h - w) * 0.5;
+        rect.setHeight(w);
+        rect.adjust(0, padding, 0, padding);
+      }
+      else if(h < w)
+      {
+        int padding = (w - h) * 0.5;
+        rect.setWidth(h);
+        rect.adjust(padding, 0, padding, 0);
+      }
 
       QPen outlinePen(outlineBrush(opt->palette), 1.0);
 
@@ -1567,7 +1699,7 @@ void RDStyle::drawControl(ControlElement control, const QStyleOption *opt, QPain
 
       if(opt->state & State_On)
       {
-        p->fillRect(rect, opt->palette.brush(QPalette::ButtonText));
+        drawX(opt, p, rect);
       }
       else if(opt->state & State_NoChange)
       {

@@ -673,6 +673,36 @@ struct VulkanPixelHistoryCallback : public VulkanActionCallback
   }
 
 protected:
+  VkImageLayout GetImageLayout(ResourceId id, VkImageAspectFlagBits aspect, const Subresource &sub)
+  {
+    const ImageState *latestState = m_pDriver->GetRecordingLayoutWithinActionCallback(id);
+
+    VkImageLayout ret = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if(latestState)
+    {
+      for(auto it = latestState->subresourceStates.begin();
+          it != latestState->subresourceStates.end(); ++it)
+      {
+        const ImageSubresourceRange &range = it->range();
+        if(VkImageAspectFlagBits(range.aspectMask & aspect) == aspect &&
+           // check slice (respecting layerCount == ~0U for 'all')
+           range.baseArrayLayer <= sub.slice &&
+           (sub.slice - range.baseArrayLayer) < range.layerCount &&
+           // check mip (respecting levelCount == ~0U for 'all')
+           range.baseMipLevel <= sub.mip && (sub.mip - range.baseMipLevel) < range.levelCount)
+        {
+          ret = it->state().newLayout;
+        }
+      }
+    }
+
+    if(ret == VK_IMAGE_LAYOUT_UNDEFINED)
+      ret = m_pDriver->GetDebugManager()->GetImageLayout(id, aspect, sub.mip, sub.slice);
+
+    return ret;
+  }
+
   // MakeIncrementStencilPipelineCI fills in the provided pipeCreateInfo
   // to create a graphics pipeline that is based on the original. The modifications
   // to the original pipeline: disables depth test and write, stencil is set
@@ -1932,9 +1962,8 @@ private:
       offset += offsetof(struct PixelHistoryValue, depth);
       aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
     }
-    targetCopyParams.srcImageLayout = m_pDriver->GetDebugManager()->GetImageLayout(
-        GetResID(m_CallbackInfo.targetImage), aspect, m_CallbackInfo.targetSubresource.mip,
-        m_CallbackInfo.targetSubresource.slice);
+    targetCopyParams.srcImageLayout = GetImageLayout(GetResID(m_CallbackInfo.targetImage), aspect,
+                                                     m_CallbackInfo.targetSubresource);
     CopyImagePixel(cmd, targetCopyParams, offset);
 
     // If the target image is a depth/stencil attachment, we already
@@ -2722,9 +2751,9 @@ struct VulkanPixelHistoryPerFragmentCallback : VulkanPixelHistoryCallback
     else
     {
       // Use the layout of the image we are substituting for.
-      VkImageLayout srcImageLayout = m_pDriver->GetDebugManager()->GetImageLayout(
-          GetResID(m_CallbackInfo.targetImage), VK_IMAGE_ASPECT_COLOR_BIT,
-          m_CallbackInfo.targetSubresource.mip, m_CallbackInfo.targetSubresource.slice);
+      VkImageLayout srcImageLayout =
+          GetImageLayout(GetResID(m_CallbackInfo.targetImage), VK_IMAGE_ASPECT_COLOR_BIT,
+                         m_CallbackInfo.targetSubresource);
       colourCopyParams.srcImageLayout = srcImageLayout;
     }
 
@@ -2894,9 +2923,8 @@ struct VulkanPixelHistoryPerFragmentCallback : VulkanPixelHistoryCallback
     VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     if(IsDepthOrStencilFormat(m_CallbackInfo.targetImageFormat))
       aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-    colourCopyParams.srcImageLayout = m_pDriver->GetDebugManager()->GetImageLayout(
-        GetResID(m_CallbackInfo.targetImage), aspect, m_CallbackInfo.targetSubresource.mip,
-        m_CallbackInfo.targetSubresource.slice);
+    colourCopyParams.srcImageLayout = GetImageLayout(GetResID(m_CallbackInfo.targetImage), aspect,
+                                                     m_CallbackInfo.targetSubresource);
 
     const ModificationValue &premod = m_EventPremods[eid];
     // For every fragment except the last one, retrieve post-modification
@@ -3347,9 +3375,9 @@ bool VulkanDebugManager::PixelHistorySetupResources(PixelHistoryResources &resou
                                                     VkFormat format, VkSampleCountFlagBits samples,
                                                     const Subresource &sub, uint32_t numEvents)
 {
-  VkMarkerRegion region(StringFormat::Fmt("PixelHistorySetupResources %ux%ux%u %s %ux MSAA",
-                                          extent.width, extent.height, extent.depth,
-                                          ToStr(format).c_str(), samples));
+  VkMarkerRegion region(
+      StringFormat::Fmt("PixelHistorySetupResources %ux%ux%u %s %ux MSAA, %u events", extent.width,
+                        extent.height, extent.depth, ToStr(format).c_str(), samples, numEvents));
   VulkanCreationInfo::Image targetImageInfo = GetImageInfo(GetResID(targetImage));
 
   VkImage colorImage;
@@ -3459,8 +3487,6 @@ bool VulkanDebugManager::PixelHistorySetupResources(PixelHistoryResources &resou
   CheckVkResult(vkr);
 
   VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  // TODO: the size for memory is calculated to fit pre and post modification values and
-  // stencil values. But we might run out of space when getting per fragment data.
   bufferInfo.size = AlignUp((uint32_t)(numEvents * sizeof(EventInfo)), 4096U);
   bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
@@ -3512,6 +3538,75 @@ bool VulkanDebugManager::PixelHistorySetupResources(PixelHistoryResources &resou
 
   resources.bufferMemory = bufferMemory;
   resources.dstBuffer = dstBuffer;
+
+  return true;
+}
+
+bool VulkanDebugManager::PixelHistorySetupPerFragResources(PixelHistoryResources &resources,
+                                                           uint32_t numEvents, uint32_t numFrags)
+{
+  const uint32_t existingBufferSize = AlignUp((uint32_t)(numEvents * sizeof(EventInfo)), 4096U);
+  const uint32_t requiredBufferSize = AlignUp((uint32_t)(numFrags * sizeof(PerFragmentInfo)), 4096U);
+
+  // If the existing buffer is big enough for all of the fragments, we can re-use it.
+  const bool canReuseBuffer = existingBufferSize >= requiredBufferSize;
+
+  VkMarkerRegion region(StringFormat::Fmt(
+      "PixelHistorySetupPerFragResources %u events %u frags, buffer size %u -> %u, %s old buffer",
+      numEvents, numFrags, existingBufferSize, requiredBufferSize,
+      canReuseBuffer ? "reusing" : "NOT reusing"));
+
+  if(canReuseBuffer)
+    return true;
+
+  // Otherwise, destroy it and create a new one that's big enough in its place.
+  VkDevice dev = m_pDriver->GetDev();
+
+  if(resources.dstBuffer != VK_NULL_HANDLE)
+    m_pDriver->vkDestroyBuffer(dev, resources.dstBuffer, NULL);
+  if(resources.bufferMemory != VK_NULL_HANDLE)
+    m_pDriver->vkFreeMemory(dev, resources.bufferMemory, NULL);
+  resources.dstBuffer = VK_NULL_HANDLE;
+  resources.bufferMemory = VK_NULL_HANDLE;
+
+  VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bufferInfo.size = requiredBufferSize;
+  bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+  VkResult vkr = m_pDriver->vkCreateBuffer(m_Device, &bufferInfo, NULL, &resources.dstBuffer);
+  CheckVkResult(vkr);
+
+  // Allocate memory
+  VkMemoryRequirements mrq = {};
+  m_pDriver->vkGetBufferMemoryRequirements(m_Device, resources.dstBuffer, &mrq);
+  VkMemoryAllocateInfo allocInfo = {
+      VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mrq.size,
+      m_pDriver->GetReadbackMemoryIndex(mrq.memoryTypeBits),
+  };
+  vkr = m_pDriver->vkAllocateMemory(m_Device, &allocInfo, NULL, &resources.bufferMemory);
+  CheckVkResult(vkr);
+
+  if(vkr != VK_SUCCESS)
+    return false;
+
+  vkr = m_pDriver->vkBindBufferMemory(m_Device, resources.dstBuffer, resources.bufferMemory, 0);
+  CheckVkResult(vkr);
+
+  VkCommandBuffer cmd = m_pDriver->GetNextCmd();
+  VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+
+  if(cmd == VK_NULL_HANDLE)
+    return false;
+
+  vkr = ObjDisp(dev)->BeginCommandBuffer(Unwrap(cmd), &beginInfo);
+  CheckVkResult(vkr);
+  ObjDisp(cmd)->CmdFillBuffer(Unwrap(cmd), Unwrap(resources.dstBuffer), 0, VK_WHOLE_SIZE, 0);
+
+  vkr = ObjDisp(dev)->EndCommandBuffer(Unwrap(cmd));
+  CheckVkResult(vkr);
+  m_pDriver->SubmitCmds();
+  m_pDriver->FlushQ();
 
   return true;
 }
@@ -4013,6 +4108,17 @@ rdcarray<PixelModification> VulkanReplay::PixelHistory(rdcarray<EventUsage> even
 
   if(eventsWithFrags.size() > 0)
   {
+    uint32_t numFrags = 0;
+    for(auto &item : eventsWithFrags)
+    {
+      numFrags += item.second;
+    }
+
+    GetDebugManager()->PixelHistorySetupPerFragResources(resources, (uint32_t)events.size(),
+                                                         numFrags);
+
+    callbackInfo.dstBuffer = resources.dstBuffer;
+
     // Replay to get shader output value, post modification value and primitive ID for every
     // fragment.
     VulkanPixelHistoryPerFragmentCallback perFragmentCB(m_pDriver, shaderCache, callbackInfo,
@@ -4178,6 +4284,8 @@ rdcarray<PixelModification> VulkanReplay::PixelHistory(rdcarray<EventUsage> even
           history[h].depthBoundsFailed = true;
       }
     }
+
+    m_pDriver->vkUnmapMemory(dev, resources.bufferMemory);
   }
 
   SAFE_DELETE(tfCb);

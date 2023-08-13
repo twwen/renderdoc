@@ -1374,14 +1374,14 @@ bool QueryTest(WrappedOpenGL *driver, GLPixelHistoryResources &resources, const 
   }
 
   driver->SetFetchCounters(true);
-  driver->glBeginQuery(eGL_SAMPLES_PASSED, samplesPassedQuery);
+  driver->glBeginQuery(eGL_ANY_SAMPLES_PASSED, samplesPassedQuery);
   driver->ReplayLog(event.eventId, event.eventId, eReplay_OnlyDraw);
-  driver->glEndQuery(eGL_SAMPLES_PASSED);
+  driver->glEndQuery(eGL_ANY_SAMPLES_PASSED);
   driver->SetFetchCounters(false);
-  int numSamplesPassed;
-  driver->glGetQueryObjectiv(samplesPassedQuery, eGL_QUERY_RESULT, &numSamplesPassed);
+  int anySamplesPassed = GL_FALSE;
+  driver->glGetQueryObjectiv(samplesPassedQuery, eGL_QUERY_RESULT, &anySamplesPassed);
   driver->glDeleteQueries(1, &samplesPassedQuery);
-  return numSamplesPassed == 0;
+  return anySamplesPassed == GL_FALSE;
 }
 
 void QueryFailedTests(WrappedOpenGL *driver, GLPixelHistoryResources &resources,
@@ -2035,6 +2035,11 @@ void CalculateFragmentDepthTests(WrappedOpenGL *driver, GLPixelHistoryResources 
       continue;
     }
 
+    GLboolean depthTestEnabled = driver->glIsEnabled(eGL_DEPTH_TEST);
+    // default for no depth test
+    int depthFunc = eGL_ALWAYS;
+    if(depthTestEnabled)
+      driver->glGetIntegerv(eGL_DEPTH_FUNC, &depthFunc);
     for(; historyIndex < history.size() && modEvents[i].eventId == history[historyIndex].eventId;
         ++historyIndex)
     {
@@ -2043,19 +2048,8 @@ void CalculateFragmentDepthTests(WrappedOpenGL *driver, GLPixelHistoryResources 
         continue;
       }
 
-      if(driver->glIsEnabled(eGL_DEPTH_TEST))
-      {
-        int depthFunc;
-        driver->glGetIntegerv(eGL_DEPTH_FUNC, &depthFunc);
-
-        history[historyIndex].depthTestFailed = !depthTestPassed(
-            depthFunc, history[historyIndex].shaderOut.depth, history[historyIndex].preMod.depth);
-      }
-      else
-      {
-        // since there is no depth test, there is no failure.
-        history[historyIndex].depthTestFailed = false;
-      }
+      history[historyIndex].depthTestFailed = !depthTestPassed(
+          depthFunc, history[historyIndex].shaderOut.depth, history[historyIndex].preMod.depth);
     }
 
     if(i < modEvents.size() - 1)
@@ -2165,6 +2159,12 @@ rdcarray<PixelModification> GLReplay::PixelHistory(rdcarray<EventUsage> events, 
   QueryPrimitiveIdPerFragment(m_pDriver, this, resources, modEvents, x, flippedY, history,
                               eventFragments, usingFloatForPrimitiveId, textureDesc.msSamp,
                               sampleIdx);
+  // copy the postMod depth to next history's preMod depth
+  // (preMode depth is to prime the depth buffer in QueryPostModPerFragment)
+  for(size_t i = 1; i < history.size(); ++i)
+  {
+    history[i].preMod.depth = history[i - 1].postMod.depth;
+  }
   QueryPostModPerFragment(m_pDriver, this, resources, modEvents, x, flippedY, history,
                           eventFragments, textureDesc.msSamp, sampleIdx, textureWidth, textureHeight);
 
